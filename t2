@@ -1,0 +1,233 @@
+import pytest
+from unittest.mock import Mock
+import torch
+
+
+FAKQUANT_CONFIG = {
+    "version": "1.0.0",
+    "model_quant_type": "W8A8_DYNAMIC",
+    "fa_quant_type": "FAKQuant",
+    "model.embed_tokens.weight": "FLOAT",
+    "model.layers.3.self_attn.fa_q.scale": "FAQuant",
+    "model.layers.3.self_attn.fa_k.scale": "FAQuant",
+    "model.layers.3.self_attn.fa_v.scale": "FAQuant",
+    "model.layers.3.self_attn.fa_q.offset": "FAQuant",
+    "model.layers.3.self_attn.fa_k.offset": "FAQuant",
+    "model.layers.3.self_attn.fa_v.offset": "FAQuant",
+}
+
+W8A8_CONFIG = {
+    "version": "1.0.0",
+    "model_quant_type": "W8A8_DYNAMIC",
+    "model.embed_tokens.weight": "FLOAT",
+    "model.layers.0.self_attn.q_a_proj.weight": "W8A8",
+    "model.layers.0.mlp.gate_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.0.mlp.up_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.0.mlp.down_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.0.gate_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.0.up_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.0.down_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.1.gate_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.1.up_proj.weight": "W8A8_DYNAMIC",
+    "model.layers.3.mlp.experts.1.down_proj.weight": "W8A8_DYNAMIC",
+}
+
+
+def create_mock_vllm_config(
+    quant_description=None,
+    model_dtype=torch.bfloat16,
+    scheduler_config=None,
+    compilation_mode=None,
+    enforce_eager=True,
+    kv_transfer_config=None,
+    parallel_config=None,
+):
+    if quant_description is None:
+        quant_description = {"group_size": 32}
+
+    mock_config = Mock()
+    mock_config.quant_config = Mock(quant_description=quant_description)
+    mock_config.model_config = Mock(
+        dtype=model_dtype,
+        hf_config=Mock(model_type=None),
+        enforce_eager=enforce_eager,
+    )
+
+    if scheduler_config is None:
+        mock_config.scheduler_config = Mock(
+            max_num_batched_tokens=2048,
+            max_model_len=2048,
+            enable_chunked_prefill=False,
+        )
+    else:
+        mock_config.scheduler_config = scheduler_config
+
+    if compilation_mode is not None:
+        mock_config.compilation_config = Mock(mode=compilation_mode)
+    else:
+        mock_config.compilation_config = Mock()
+
+    mock_config.kv_transfer_config = kv_transfer_config
+
+    if parallel_config is None:
+        mock_config.parallel_config = Mock(enable_expert_parallel=True)
+    else:
+        mock_config.parallel_config = parallel_config
+
+    return mock_config
+
+
+def create_mock_ascend_config(
+    multistream_overlap_gate=False,
+    dynamic_eplb=False,
+    flashcomm2_oproj_tensor_parallel_size=1,
+):
+    mock_config = Mock()
+    mock_config.multistream_overlap_gate = multistream_overlap_gate
+    mock_config.eplb_config = Mock(dynamic_eplb=dynamic_eplb)
+    mock_config.flashcomm2_oproj_tensor_parallel_size = flashcomm2_oproj_tensor_parallel_size
+    return mock_config
+
+
+def create_mock_ep_group():
+    return Mock()
+
+
+def create_mock_mc2_group():
+    mock_group = Mock()
+    mock_device_group = Mock()
+    mock_backend = Mock()
+    mock_backend.get_hccl_comm_name.return_value = "mock_hccl_comm"
+    mock_device_group._get_backend.return_value = mock_backend
+    mock_group.device_group = mock_device_group
+    return mock_group
+
+
+def create_linear_layer(
+    input_size=256,
+    output_size=128,
+    weight_dtype=torch.int8,
+    has_weight_scale=True,
+    has_weight_offset=True,
+    has_input_scale=False,
+    has_input_offset=False,
+    has_deq_scale=False,
+    has_quant_bias=False,
+    has_weight_scale_second=False,
+    has_weight_offset_second=False,
+    params_dtype=torch.bfloat16,
+):
+    layer = torch.nn.Module()
+    layer.weight = torch.nn.Parameter(
+        torch.randint(-128, 127, (output_size, input_size), dtype=weight_dtype),
+        requires_grad=False,
+    )
+
+    if has_weight_scale:
+        layer.weight_scale = torch.nn.Parameter(
+            torch.randn(output_size, 1, dtype=params_dtype), requires_grad=False
+        )
+
+    if has_weight_offset:
+        layer.weight_offset = torch.nn.Parameter(
+            torch.randn(output_size, 1, dtype=params_dtype), requires_grad=False
+        )
+
+    if has_input_scale:
+        layer.input_scale = torch.nn.Parameter(
+            torch.randn(1, dtype=params_dtype), requires_grad=False
+        )
+
+    if has_input_offset:
+        layer.input_offset = torch.nn.Parameter(
+            torch.zeros(1, dtype=torch.int8), requires_grad=False
+        )
+
+    if has_deq_scale:
+        layer.deq_scale = torch.nn.Parameter(
+            torch.randn(output_size, dtype=torch.float32), requires_grad=False
+        )
+
+    if has_quant_bias:
+        layer.quant_bias = torch.nn.Parameter(
+            torch.randn(output_size, dtype=torch.int32), requires_grad=False
+        )
+
+    if has_weight_scale_second:
+        group_size = 256
+        layer.weight_scale_second = torch.nn.Parameter(
+            torch.randn(output_size, input_size // group_size, dtype=params_dtype), requires_grad=False
+        )
+
+    if has_weight_offset_second:
+        group_size = 256
+        layer.weight_offset_second = torch.nn.Parameter(
+            torch.randn(output_size, input_size // group_size, dtype=params_dtype), requires_grad=False
+        )
+
+    return layer
+
+
+def create_moe_layer(
+    num_experts=8,
+    hidden_size=128,
+    intermediate_size=128,
+    weight_dtype=torch.int8,
+    params_dtype=torch.bfloat16,
+):
+    layer = torch.nn.Module()
+    layer.w13_weight = torch.nn.Parameter(
+        torch.randint(-8, 8, (num_experts, 2 * intermediate_size, hidden_size), dtype=weight_dtype),
+        requires_grad=False,
+    )
+    layer.w2_weight = torch.nn.Parameter(
+        torch.randint(-8, 8, (num_experts, hidden_size, intermediate_size), dtype=weight_dtype),
+        requires_grad=False,
+    )
+    layer.w13_weight_scale = torch.nn.Parameter(
+        torch.ones((num_experts, 2 * intermediate_size, 1), dtype=params_dtype), requires_grad=False
+    )
+    layer.w13_weight_offset = torch.nn.Parameter(
+        torch.zeros((num_experts, 2 * intermediate_size, 1), dtype=params_dtype), requires_grad=False
+    )
+    layer.w2_weight_scale = torch.nn.Parameter(
+        torch.ones((num_experts, hidden_size, 1), dtype=params_dtype), requires_grad=False
+    )
+    layer.w2_weight_offset = torch.nn.Parameter(
+        torch.zeros((num_experts, hidden_size, 1), dtype=params_dtype), requires_grad=False
+    )
+    return layer
+
+
+@pytest.fixture
+def mock_vllm_config():
+    configs = {}
+
+    def _create(quant_description=None, **kwargs):
+        config = create_mock_vllm_config(quant_description=quant_description, **kwargs)
+        configs["current"] = config
+        return config
+
+    yield _create
+    configs.clear()
+
+
+@pytest.fixture
+def mock_ascend_config():
+    def _create(**kwargs):
+        return create_mock_ascend_config(**kwargs)
+    return _create
+
+
+@pytest.fixture
+def standard_linear_dims():
+    return {"input_size": 256, "output_size": 128}
+
+
+@pytest.fixture
+def standard_moe_dims():
+    return {
+        "num_experts": 8,
+        "hidden_size": 128,
+        "intermediate_size": 128,
+    }

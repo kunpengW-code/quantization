@@ -1,222 +1,122 @@
-import json
 import os
-import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
+import torch
+
 from tests.ut.base import TestBase
-from tests.ut.quantization.conftest_quantization import FAKQUANT_CONFIG, W8A8_CONFIG
-from vllm_ascend.quantization import AscendCompressedTensorsConfig
-from vllm_ascend.quantization.modelslim_config import MODELSLIM_CONFIG_FILENAME, AscendModelSlimConfig
-from vllm_ascend.quantization.utils import (
-    detect_quantization_method,
-    enable_fa_quant,
-    maybe_auto_detect_quantization,
-)
-from vllm_ascend.utils import ASCEND_QUANTIZATION_METHOD, COMPRESSED_TENSORS_METHOD
+from vllm_ascend.quantization.methods.w8a16 import AscendW8A16LinearMethod
 
 
-class TestDetectQuantizationMethod(TestBase):
+class TestAscendW8A16LinearMethod(TestBase):
 
-    def test_returns_none_for_non_existent_path(self):
-        result = detect_quantization_method("/non/existent/path")
-        self.assertIsNone(result)
+    def setUp(self):
+        self.method = AscendW8A16LinearMethod()
 
-    def test_detects_modelslim(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, MODELSLIM_CONFIG_FILENAME)
-            with open(config_path, "w") as f:
-                json.dump({"layer.weight": "INT8"}, f)
+    def test_get_weight(self):
+        input_size, output_size = 10, 20
+        weight = self.method.get_weight(input_size, output_size)
+        self.assertEqual(weight['weight'].dtype, torch.int8)
+        self.assertEqual(weight['weight'].shape, (output_size, input_size))
 
-            result = detect_quantization_method(tmpdir)
-            self.assertEqual(result, ASCEND_QUANTIZATION_METHOD)
+        weight = self.method.get_weight(input_size, output_size, torch.float16)
+        self.assertEqual(weight['weight'].dtype, torch.int8)
+        self.assertEqual(weight['weight'].shape, (output_size, input_size))
 
-    def test_detects_compressed_tensors(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, "config.json")
-            with open(config_path, "w") as f:
-                json.dump({
-                    "quantization_config": {
-                        "quant_method": "compressed-tensors"
-                    }
-                }, f)
+    @pytest.mark.parametrize("output_size", [128, 256])
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_get_per_channel_param(self, output_size, dtype):
+        per_channel_params = self.method.get_perchannel_param(output_size, dtype)
+        assert per_channel_params['weight_scale'].dtype == dtype
+        assert per_channel_params['weight_scale'].shape == (output_size, 1)
+        assert per_channel_params['weight_offset'].dtype == dtype
+        assert per_channel_params['weight_offset'].shape == (output_size, 1)
+        assert len(per_channel_params) == 2
 
-            result = detect_quantization_method(tmpdir)
-            self.assertEqual(result, COMPRESSED_TENSORS_METHOD)
+    @patch("torch_npu.npu_weight_quant_batchmatmul")
+    def test_apply_with_x_is_int8(self, mock_npu_weight_quant_batchmatmul):
+        layer = MagicMock()
+        layer.weight.data = torch.randn(128, 256)
+        layer.weight_scale.data = torch.randn(128, 1)
+        layer.weight_offset.data = torch.randn(128, 1)
 
-    def test_returns_none_for_no_quant(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = detect_quantization_method(tmpdir)
-            self.assertIsNone(result)
+        x = torch.randn(32, 128)
+        bias = torch.randn(256)
 
-    def test_returns_none_for_non_compressed_tensors_quant_method(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, "config.json")
-            with open(config_path, "w") as f:
-                json.dump({
-                    "quantization_config": {
-                        "quant_method": "gptq"
-                    }
-                }, f)
+        expected_y_output = torch.randn(32, 256)
+        mock_npu_weight_quant_batchmatmul.return_value = expected_y_output
 
-            result = detect_quantization_method(tmpdir)
-            self.assertIsNone(result)
+        output = self.method.apply(layer, x, bias)
+        expected_y_output += bias
+        self.assertTrue(torch.equal(output, expected_y_output))
 
-    def test_returns_none_for_config_without_quant_config(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, "config.json")
-            with open(config_path, "w") as f:
-                json.dump({"model_type": "llama"}, f)
+    def test_apply(self):
+        layer = MagicMock()
+        layer.weight.data = torch.randint(-128, 127, (128, 256), dtype=torch.int8)
+        layer.weight_scale.data = torch.randn(128, 1, dtype=torch.bfloat16)
+        layer.weight_offset.data = torch.randn(128, 1, dtype=torch.bfloat16)
 
-            result = detect_quantization_method(tmpdir)
-            self.assertIsNone(result)
+        x = torch.randn(32, 128, dtype=torch.bfloat16)
+        bias = torch.randn(256, dtype=torch.float32)
 
-    def test_returns_none_for_malformed_config_json(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = os.path.join(tmpdir, "config.json")
-            with open(config_path, "w") as f:
-                f.write("not valid json{{{")
+        output = self.method.apply(layer, x, bias)
+        self.assertEqual(output.shape, (32, 256))
 
-            result = detect_quantization_method(tmpdir)
-            self.assertIsNone(result)
+    @patch.dict(os.environ, {"VLLM_ASCEND_ENABLE_NZ": "0"})
+    @patch('torch_npu.npu_format_cast')
+    def test_process_weights_after_loading_with_nz0(self,
+                                                    mock_npu_format_cast):
+        layer = MagicMock()
+        layer.weight.data = torch.randint(-128,
+                                          127, (128, 256),
+                                          dtype=torch.int8)
+        layer.weight_scale.data = torch.randn(128, 1)
+        layer.weight_offset.data = torch.randn(128, 1)
 
-    def test_modelslim_takes_priority_over_compressed_tensors(self):
-        """When both ModelSlim config and compressed-tensors config exist,
-        ModelSlim should take priority."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            modelslim_path = os.path.join(tmpdir, MODELSLIM_CONFIG_FILENAME)
-            with open(modelslim_path, "w") as f:
-                json.dump({"layer.weight": "INT8"}, f)
+        mock_npu_format_cast.return_value = MagicMock
+        self.method.process_weights_after_loading(layer)
 
-            config_path = os.path.join(tmpdir, "config.json")
-            with open(config_path, "w") as f:
-                json.dump({
-                    "quantization_config": {
-                        "quant_method": "compressed-tensors"
-                    }
-                }, f)
+        self.assertEqual(layer.weight.data.shape, (256, 128))
+        self.assertEqual(layer.weight_scale.data.shape, (128, ))
+        self.assertEqual(layer.weight_offset.data.shape, (128, ))
+        mock_npu_format_cast.assert_not_called()
 
-            result = detect_quantization_method(tmpdir)
-            self.assertEqual(result, ASCEND_QUANTIZATION_METHOD)
+    @patch.dict(os.environ, {"VLLM_ASCEND_ENABLE_NZ": "1"})
+    @patch('torch_npu.npu_format_cast')
+    def test_process_weights_after_loading_with_nz1(self,
+                                                    mock_npu_format_cast):
+        layer = MagicMock()
 
+        layer.weight.data = torch.randint(-128,
+                                          127, (128, 256),
+                                          dtype=torch.int8)
+        layer.weight_scale.data = torch.randn(128, 1)
+        layer.weight_offset.data = torch.randn(128, 1)
 
-class TestMaybeAutoDetectQuantization(TestBase):
+        mock_npu_format_cast.return_value = MagicMock
+        self.method.process_weights_after_loading(layer)
 
-    def _make_vllm_config(self, model_path="/fake/model",
-                           quantization=None, revision=None):
-        vllm_config = MagicMock()
-        vllm_config.model_config.model = model_path
-        vllm_config.model_config.quantization = quantization
-        vllm_config.model_config.revision = revision
-        return vllm_config
+        self.assertEqual(layer.weight.data.shape, (256, 128))
+        self.assertEqual(layer.weight_scale.data.shape, (128, ))
+        self.assertEqual(layer.weight_offset.data.shape, (128, ))
+        mock_npu_format_cast.assert_called_once()
 
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=None)
-    def test_no_detection_does_nothing(self, mock_detect):
-        vllm_config = self._make_vllm_config()
-        maybe_auto_detect_quantization(vllm_config)
-        self.assertIsNone(vllm_config.model_config.quantization)
+    @patch.dict(os.environ, {"VLLM_ASCEND_ENABLE_NZ": "2"})
+    @patch('torch_npu.npu_format_cast')
+    def test_process_weights_after_loading_with_nz2(self,
+                                                    mock_npu_format_cast):
+        layer = MagicMock()
 
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=ASCEND_QUANTIZATION_METHOD)
-    def test_user_specified_same_method_no_change(self, mock_detect):
-        vllm_config = self._make_vllm_config(
-            quantization=ASCEND_QUANTIZATION_METHOD)
-        maybe_auto_detect_quantization(vllm_config)
-        self.assertEqual(vllm_config.model_config.quantization,
-                         ASCEND_QUANTIZATION_METHOD)
+        layer.weight.data = torch.randint(-128,
+                                          127, (128, 256),
+                                          dtype=torch.int8)
+        layer.weight_scale.data = torch.randn(128, 1)
+        layer.weight_offset.data = torch.randn(128, 1)
 
-    @patch("vllm.config.VllmConfig._get_quantization_config",
-           return_value=MagicMock())
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=ASCEND_QUANTIZATION_METHOD)
-    def test_auto_detect_sets_quantization_and_logs_info(
-            self, mock_detect, mock_get_quant_config):
-        """When no --quantization is specified but ModelSlim config is found,
-        the method should auto-set quantization and emit an INFO log."""
-        vllm_config = self._make_vllm_config(
-            model_path="/fake/quant_model", quantization=None)
+        mock_npu_format_cast.return_value = MagicMock
+        self.method.process_weights_after_loading(layer)
 
-        with patch("vllm_ascend.quantization.utils.logger") as mock_logger:
-            maybe_auto_detect_quantization(vllm_config)
-
-        self.assertEqual(vllm_config.model_config.quantization,
-                         ASCEND_QUANTIZATION_METHOD)
-        mock_logger.info.assert_called_once()
-        call_args = mock_logger.info.call_args[0]
-        self.assertIn("Auto-detected quantization method", call_args[0])
-        self.assertIn(ASCEND_QUANTIZATION_METHOD, call_args)
-        self.assertIn("/fake/quant_model", call_args)
-
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=ASCEND_QUANTIZATION_METHOD)
-    def test_user_mismatch_logs_warning(self, mock_detect):
-        """When user specifies a different method than auto-detected,
-        a WARNING should be emitted and user's choice should be respected."""
-        vllm_config = self._make_vllm_config(
-            model_path="/fake/quant_model",
-            quantization=COMPRESSED_TENSORS_METHOD)
-
-        with patch("vllm_ascend.quantization.utils.logger") as mock_logger:
-            maybe_auto_detect_quantization(vllm_config)
-
-        self.assertEqual(vllm_config.model_config.quantization,
-                         COMPRESSED_TENSORS_METHOD)
-        mock_logger.warning.assert_called_once()
-        call_args = mock_logger.warning.call_args[0]
-        self.assertIn("Auto-detected quantization method", call_args[0])
-        self.assertIn(ASCEND_QUANTIZATION_METHOD, call_args)
-        self.assertIn(COMPRESSED_TENSORS_METHOD, call_args)
-
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=None)
-    def test_no_detection_emits_no_log(self, mock_detect):
-        """When no quantization is detected, no log should be emitted."""
-        vllm_config = self._make_vllm_config(quantization=None)
-
-        with patch("vllm_ascend.quantization.utils.logger") as mock_logger:
-            maybe_auto_detect_quantization(vllm_config)
-
-        mock_logger.info.assert_not_called()
-        mock_logger.warning.assert_not_called()
-        self.assertIsNone(vllm_config.model_config.quantization)
-
-    @patch("vllm.config.VllmConfig._get_quantization_config",
-           return_value=MagicMock())
-    @patch("vllm_ascend.quantization.utils.detect_quantization_method",
-           return_value=ASCEND_QUANTIZATION_METHOD)
-    def test_passes_revision_to_detect(self, mock_detect, mock_get_quant):
-        """Verify that model revision is forwarded to detect_quantization_method."""
-        vllm_config = self._make_vllm_config(
-            model_path="org/model-name", revision="v1.0", quantization=None)
-        maybe_auto_detect_quantization(vllm_config)
-        mock_detect.assert_called_once_with("org/model-name", revision="v1.0")
-
-
-class TestEnableFaQuant(TestBase):
-
-    def test_non_quantization_scenarios(self):
-        vllm_config = MagicMock()
-        vllm_config.quant_config = None
-        result = enable_fa_quant(vllm_config)
-        self.assertFalse(result)
-
-    def test_llmcompressor_quantization_scenario(self):
-        vllm_config = MagicMock()
-        vllm_config.quant_config = AscendCompressedTensorsConfig({}, [], "", {})
-        result = enable_fa_quant(vllm_config)
-        self.assertFalse(result)
-
-    def test_not_fa3_quantization_scenario(self):
-        vllm_config = MagicMock()
-        vllm_config.quant_config = AscendModelSlimConfig(W8A8_CONFIG)
-        result = enable_fa_quant(vllm_config)
-        self.assertFalse(result)
-
-    def test_fa3_quantization_scenario(self):
-        vllm_config = MagicMock()
-        vllm_config.quant_config = AscendModelSlimConfig(FAKQUANT_CONFIG)
-        vllm_config.kv_transfer_config = None
-        result = enable_fa_quant(vllm_config)
-        self.assertTrue(result)
-        result = enable_fa_quant(vllm_config, layer_name="test_layer")
-        self.assertFalse(result)
+        self.assertEqual(layer.weight.data.shape, (256, 128))
+        self.assertEqual(layer.weight_scale.data.shape, (128, ))
+        self.assertEqual(layer.weight_offset.data.shape, (128, ))
+        mock_npu_format_cast.assert_called_once()

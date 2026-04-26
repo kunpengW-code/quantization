@@ -176,10 +176,10 @@ def create_mxfp_moe_layer(
 ):
     layer = nn.Module()
     layer.w13_weight = nn.Parameter(
-        torch.randn(num_experts, 2 * intermediate_size, hidden_size, dtype=weight_dtype), requires_grad=False
+        torch.randn(num_experts, 2 * intermediate_size, hidden_size).to(weight_dtype), requires_grad=False
     )
     layer.w2_weight = nn.Parameter(
-        torch.randn(num_experts, hidden_size, intermediate_size, dtype=weight_dtype), requires_grad=False
+        torch.randn(num_experts, hidden_size, intermediate_size).to(weight_dtype), requires_grad=False
     )
     layer.w13_weight_scale = nn.Parameter(
         torch.randint(0, 255, (num_experts, 2 * intermediate_size, hidden_size // group_size), dtype=scale_dtype), requires_grad=False

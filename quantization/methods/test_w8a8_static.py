@@ -40,9 +40,9 @@ class TestAscendW8A8LinearMethod(TestBase):
             self.assertEqual(params['quant_bias'].shape, (output_size,))
             self.assertEqual(params['quant_bias'].dtype, torch.int32)
             self.assertEqual(params['weight_scale'].shape, (output_size, 1))
-            self.assertEqual(params['weight_scale'].dtype, torch.bfloat16)
+            self.assertEqual(params['weight_scale'].dtype, dtype)
             self.assertEqual(params['weight_offset'].shape, (output_size, 1))
-            self.assertEqual(params['weight_offset'].dtype, torch.bfloat16)
+            self.assertEqual(params['weight_offset'].dtype, dtype)
             self.assertEqual(params['deq_scale'].shape, (output_size, ))
             if dtype == torch.bfloat16:
                 self.assertEqual(params['deq_scale'].dtype, torch.float32)
@@ -82,7 +82,7 @@ class TestAscendW8A8LinearMethod(TestBase):
         mock_quantize.assert_called_once()
         mock_npu_quant_matmul.assert_called_once()
         call_kwargs = mock_npu_quant_matmul.call_args.kwargs
-        self.assertEqual(call_kwargs['bias'], quant_bias)
+        self.assertTrue(torch.equal(call_kwargs['bias'], quant_bias))
 
     @patch(
         "vllm_ascend.quantization.methods.w8a8_static.get_weight_prefetch_method"
@@ -94,7 +94,7 @@ class TestAscendW8A8LinearMethod(TestBase):
         input_size, output_size = 128, 256
         layer.weight = torch.nn.Parameter(torch.randint(-128, 127, (input_size, output_size), dtype=torch.int8).npu(),
                                           requires_grad=False)
-        layer.quant_bias = torch.nn.Parameter(torch.randn(output_size, dtype=torch.int32).npu(), requires_grad=False)
+        layer.quant_bias = torch.nn.Parameter(torch.randn(output_size).to(torch.int32).npu(), requires_grad=False)
         layer.deq_scale = torch.nn.Parameter(torch.randn(output_size, dtype=torch.float32).npu(), requires_grad=False)
         layer.params_dtype = torch.bfloat16
         input_scale = torch.randn(input_size, dtype=layer.params_dtype).npu()
@@ -131,7 +131,7 @@ class TestAscendW8A8LinearMethod(TestBase):
         mock_quantize.assert_not_called()
         mock_npu_quant_matmul.assert_called_once()
         call_kwargs = mock_npu_quant_matmul.call_args.kwargs
-        self.assertEqual(call_kwargs['bias'], bias)
+        self.assertTrue(torch.equal(call_kwargs['bias'], bias))
 
     @patch.dict(os.environ, {"VLLM_ASCEND_ENABLE_NZ": "0"})
     @patch('torch_npu.npu_format_cast')
@@ -187,7 +187,7 @@ class TestAscendW8A8LinearMethod(TestBase):
         self.assertEqual(layer.weight_scale.data.shape, (128, ))
         self.assertEqual(layer.weight_offset.data.shape, (128, ))
         mock_npu_format_cast.assert_called_once()
-        self.assertNotIn("deq_scale", dict(layer.named_parameters()))
+        self.assertTrue(isinstance(layer.deq_scale, MagicMock))
 
     @patch.dict(os.environ, {"VLLM_ASCEND_ENABLE_NZ": "2"})
     @patch('torch_npu.npu_format_cast')
@@ -217,3 +217,4 @@ class TestAscendW8A8LinearMethod(TestBase):
         self.assertEqual(layer.weight_offset.data.shape, (128, ))
         mock_npu_format_cast.assert_called_once()
         self.assertIn("deq_scale", dict(layer.named_parameters()))
+        self.assertFalse(isinstance(layer.deq_scale, MagicMock))

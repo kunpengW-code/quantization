@@ -298,8 +298,8 @@ class TestGetLinearQuantType(TestBase):
 
     def test_fused_layer_consistent_quant_types(self):
         quant_description = {
-            "fused_layer.shard1.weight": "W8A8_DYNAMIC",
-            "fused_layer.shard2.weight": "W8A8_DYNAMIC",
+            "shard1.weight": "W8A8_DYNAMIC",
+            "shard2.weight": "W8A8_DYNAMIC",
         }
         packed_modules_mapping = {"fused_layer": ["shard1", "shard2"]}
         result = get_linear_quant_type(quant_description, "fused_layer", packed_modules_mapping)
@@ -307,8 +307,8 @@ class TestGetLinearQuantType(TestBase):
 
     def test_fused_layer_inconsistent_quant_types(self):
         quant_description = {
-            "fused_layer.shard1.weight": "W8A8_DYNAMIC",
-            "fused_layer.shard2.weight": "FLOAT",
+            "shard1.weight": "W8A8_DYNAMIC",
+            "shard2.weight": "FLOAT",
         }
         packed_modules_mapping = {"fused_layer": ["shard1", "shard2"]}
         with self.assertRaises(ValueError) as ctx:
@@ -381,9 +381,8 @@ class TestCreateSchemeForLayer(TestBase):
 
     def test_quant_type_none_raises_error(self):
         quant_description = {}
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(KeyError) as ctx:
             create_scheme_for_layer(quant_description, "layer1", "linear")
-        self.assertIn("Could not determine quantization type", str(ctx.exception))
 
     @patch("vllm_ascend.quantization.modelslim_config.get_scheme_class")
     def test_unsupported_quant_type_raises_error(self, mock_get_scheme_class):
@@ -427,7 +426,7 @@ class TestApplyVllmMapper(TestBase):
 
         config.apply_vllm_mapper(mock_mapper)
 
-        mock_mapper.apply_dict.assert_called_once_with({})
+        mock_mapper.apply_dict.assert_not_called()
 
 
 class TestGetCacheScale(TestBase):

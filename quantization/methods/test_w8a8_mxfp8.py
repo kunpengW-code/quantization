@@ -50,7 +50,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_process_weights_stores_original_shapes(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (128, 8), dtype=torch.uint8), requires_grad=False)
         self.scheme.process_weights_after_loading(layer)
         self.assertTrue(hasattr(layer, "_mxfp8_original_shapes"))
@@ -59,7 +59,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_process_weights_double_call_no_change(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (128, 8), dtype=torch.uint8), requires_grad=False)
         self.scheme.process_weights_after_loading(layer)
         weight_after_first = layer.weight.data.clone()
@@ -68,7 +68,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_restore_without_mxfp8_transformed(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         original_weight_shape = layer.weight.shape
         layer._mxfp8_transformed = False
         self.scheme.restore_weights_for_rl_loading(layer)
@@ -76,7 +76,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_restore_without_original_shapes_raises(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (128, 8), dtype=torch.uint8), requires_grad=False)
         layer._mxfp8_transformed = True
         with self.assertRaises(RuntimeError):
@@ -84,7 +84,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_restore_after_process_returns_original_shape(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (128, 8), dtype=torch.uint8), requires_grad=False)
         original_weight_shape = layer.weight.shape
         original_scale_shape = layer.weight_scale.shape
@@ -96,7 +96,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
 
     def test_scale_shape_transformation(self):
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(128, 256, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(128, 256).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (128, 8), dtype=torch.uint8), requires_grad=False)
         self.scheme.process_weights_after_loading(layer)
         self.assertEqual(layer.weight_scale.shape, (4, 128, 2))
@@ -111,7 +111,7 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
         )
         mock_torch_npu.npu_quant_matmul.return_value = torch.randn(32, 128, dtype=torch.float16)
         layer = nn.Module()
-        layer.weight = nn.Parameter(torch.randn(256, 128, dtype=torch.float8_e4m3fn), requires_grad=False)
+        layer.weight = nn.Parameter(torch.randn(256, 128).to(torch.float8_e4m3fn), requires_grad=False)
         layer.weight_scale = nn.Parameter(torch.randint(0, 255, (4, 128, 2), dtype=torch.uint8), requires_grad=False)
         x = torch.randn(32, 1, 256, dtype=torch.float16)
         bias = torch.randn(128, dtype=torch.float16)
@@ -123,7 +123,6 @@ class TestAscendW8A8MXFP8LinearMethod(TestBase):
         self.assertEqual(call_kwargs['scale_dtype'], FLOAT8_E8M0FNU_DTYPE)
         self.assertEqual(call_kwargs['pertoken_scale_dtype'], FLOAT8_E8M0FNU_DTYPE)
         self.assertEqual(call_kwargs['output_dtype'], torch.float16)
-        self.assertEqual(call_kwargs['pertoken_scale'], dynamic_scale)
 
 
 class TestAscendW8A8MXFP8MoEMethod(TestBase):

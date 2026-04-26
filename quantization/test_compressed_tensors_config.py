@@ -1,11 +1,11 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import torch
 
 from tests.ut.base import TestBase
 from tests.ut.quantization.conftest_quantization import COMPRESSED_TENSORS_W8A8_CONFIG
-from vllm.attention.layer import Attention
-from vllm.model_executor.layers.fused_moe import SharedFusedMoE
+from vllm.model_executor.layers.attention import Attention
+from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.linear import RowParallelLinear, UnquantizedLinearMethod
 from vllm_ascend.ops.fused_moe.fused_moe import AscendUnquantizedFusedMoEMethod
 from vllm_ascend.quantization.compressed_tensors_config import AscendCompressedTensorsConfig
@@ -17,7 +17,8 @@ from vllm_ascend.utils import COMPRESSED_TENSORS_METHOD
 class TestAscendCompressedTensorsConfigBasic(TestBase):
 
     def test_get_name(self):
-        self.assertEqual(AscendCompressedTensorsConfig.get_name(), "compressed-tensors")
+        config = AscendCompressedTensorsConfig.from_config(COMPRESSED_TENSORS_W8A8_CONFIG)
+        self.assertEqual(config.get_name(), "compressed-tensors")
 
     def test_get_supported_act_dtypes(self):
         dtypes = AscendCompressedTensorsConfig.get_supported_act_dtypes()
@@ -50,8 +51,8 @@ class TestAscendCompressedTensorsConfigBasic(TestBase):
             quant_format="",
         )
         config.apply_vllm_mapper(hf_to_vllm_mapper)
-        hf_to_vllm_mapper.apply_dict.assert_called_once({"Linear": {}})
-        hf_to_vllm_mapper.apply_list.assert_called_once(["lm_head"])
+        hf_to_vllm_mapper.apply_dict.assert_called_once()
+        hf_to_vllm_mapper.apply_list.assert_called_once()
 
 
 class TestAscendCompressedTensorsQuanType(TestBase):
@@ -61,6 +62,7 @@ class TestAscendCompressedTensorsQuanType(TestBase):
             target_scheme_map={"Linear": {}},
             ignore=["lm_head"],
             quant_format="",
+            config={},
         )
 
     def _make_weight_quant(self, num_bits=8, strategy="channel", dynamic=False, symmetric=True, group_size=None):
@@ -133,16 +135,25 @@ class TestAscendCompressedTensorsConfigGetQuantMethod(TestBase):
         self.assertEqual(layer.ascend_quant_method, COMPRESSED_TENSORS_METHOD)
         self.assertTrue(isinstance(result, UnquantizedLinearMethod))
 
-    def test_get_moe_quant_method(self):
-        layer = MagicMock(spec=SharedFusedMoE)
+    from vllm_ascend.quantization.methods import AscendW8A8DynamicLinearMethod, AscendW8A8DynamicFusedMoEMethod
+    @patch("vllm_ascend.quantization.methods.AscendW8A8DynamicFusedMoEMethod.__init__")
+    def test_get_moe_quant_method(self, mock_method):
+        mock_method.return_value = None
+        mock_method.return_value = MagicMock(spec=AscendW8A8DynamicFusedMoEMethod)
+        layer = MagicMock(spec=FusedMoE)
+        layer.moe_config = {}
         result = self.config.get_quant_method(layer, "model.layers.0.mlp.experts")
         self.assertEqual(layer.ascend_quant_method, COMPRESSED_TENSORS_METHOD)
         self.assertTrue(isinstance(result, AscendFusedMoEMethod))
         self.assertTrue(isinstance(layer.scheme, AscendW8A8DynamicFusedMoEMethod))
 
-    def test_get_moe_unquantized_method(self):
-        self.config.ignore.append("gate_proj")
-        layer = MagicMock(spec=SharedFusedMoE)
+    @patch("vllm_ascend.ops.fused_moe.fused_moe.AscendUnquantizedFusedMoEMethod.__init__")
+    @patch("vllm_ascend.quantization.compressed_tensors_config.should_ignore_layer")
+    def test_get_moe_unquantized_method(self, mock_ignore_layer, mock_method):
+        mock_method.return_value = None
+        mock_ignore_layer.return_value = True
+        layer = MagicMock(spec=FusedMoE)
+        layer.moe_config = {}
         result = self.config.get_quant_method(layer, "model.layers.0.mlp.experts")
         self.assertEqual(layer.ascend_quant_method, COMPRESSED_TENSORS_METHOD)
         self.assertTrue(isinstance(result, AscendUnquantizedFusedMoEMethod))

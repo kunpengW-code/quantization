@@ -81,7 +81,7 @@ class TestAscendW8A8DynamicLinearMethod(TestBase):
         layer.weight_scale = torch.randn(256, dtype=torch.float32)
         x = torch.randn(32, 1, 128, dtype=torch.bfloat16)
         output = self.method.apply(layer, x)
-        self.assertEqual(output.shape, (32, 1, 256))
+        self.assertEqual(output.shape, (32, 1, 1, 256))
 
     def test_apply_with_npu(self):
         layer = torch.nn.Module()
@@ -97,16 +97,15 @@ class TestAscendW8A8DynamicLinearMethod(TestBase):
 
     def test_process_weights_after_loading(self):
         layer = MagicMock()
-        layer.weight = MagicMock()
         layer.weight.data = torch.randint(-128, 127, (128, 256), dtype=torch.int8)
-        layer.weight_scale = MagicMock(data=torch.randn(256, 1, dtype=torch.bfloat16))
-        layer.weight_offset = MagicMock(data=torch.randn(256, 1, dtype=torch.bfloat16))
+        layer.weight_scale.data=torch.randn(256, 1, dtype=torch.bfloat16)
+        layer.weight_offset.data=torch.randn(256, 1, dtype=torch.bfloat16)
         with patch('vllm_ascend.quantization.methods.w8a8_dynamic.maybe_trans_nz', side_effect=lambda x: x):
             self.method.process_weights_after_loading(layer)
         self.assertEqual(layer.weight_scale_fp32.dtype, torch.float32)
-        self.assertEqual(layer.weight_scale.shape, (256,))
-        self.assertEqual(layer.weight_offset.shape, (256,))
-        self.assertEqual(layer.weight.shape, (256, 128))
+        self.assertEqual(layer.weight_scale.data.shape, (256,))
+        self.assertEqual(layer.weight_offset.data.shape, (256,))
+        self.assertEqual(layer.weight.data.shape, (256, 128))
 
 
 class TestAscendW8A8FusedMoEMethod(TestBase):

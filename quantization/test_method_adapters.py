@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import torch
 
@@ -35,7 +35,9 @@ class TestAscendLinearMethod(TestBase):
         }
         self.method = AscendLinearMethod(self.mock_scheme)
 
-    def test_create_weights(self):
+    @patch("vllm_ascend.quantization.method_adapters.PerTensorScaleParameter")
+    def test_create_weights(self, mock_parameter):
+        mock_parameter.return_value = torch.nn.Parameter(torch.empty(1, 1, dtype=torch.int8), requires_grad=False)
         layer = torch.nn.Module()
         weight_loader = MagicMock()
         self.method.create_weights(
@@ -71,8 +73,8 @@ class TestAscendLinearMethod(TestBase):
         self.mock_scheme.get_pergroup_param.assert_called_once()
         self.assertEqual(layer.weight_scale_pergroup.output_dim, 0)
         self.assertFalse(hasattr(layer.weight_scale_pergroup, "input_dim"))
-        self.assertEqual(layer.weight_scale_second.output_dim, 1)
-        self.assertEqual(layer.weight_offset_second.output_dim, 1)
+        self.assertEqual(layer.weight_scale_second.input_dim, 1)
+        self.assertEqual(layer.weight_offset_second.input_dim, 1)
 
     def test_process_weights_after_loading_delegates(self):
         layer = torch.nn.Module()

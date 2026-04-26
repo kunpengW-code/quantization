@@ -42,7 +42,7 @@ class TestAscendW4A4LaosDynamicLinearMethod(TestBase):
     @patch("torch_npu.npu_dynamic_quant")
     def test_apply_2d_input(self, mock_dyn_quant, mock_matmul):
         mock_dyn_quant.return_value = (
-            torch.randint(0, 15, (32, 128), dtype=torch.quint4x2),
+            torch.randint(0, 15, (32, 128), dtype=torch.int32),
             torch.randn(32, dtype=torch.float32)
         )
         mock_matmul.return_value = torch.randn(32, 256)
@@ -57,7 +57,7 @@ class TestAscendW4A4LaosDynamicLinearMethod(TestBase):
     @patch("torch_npu.npu_dynamic_quant")
     def test_apply_with_bias(self, mock_dyn_quant, mock_matmul):
         mock_dyn_quant.return_value = (
-            torch.randint(0, 15, (32, 128), dtype=torch.quint4x2),
+            torch.randint(0, 15, (32, 128), dtype=torch.int32),
             torch.randn(32, dtype=torch.float32)
         )
         expected_output = torch.randn(32, 256, dtype=torch.bfloat16)
@@ -95,7 +95,7 @@ class TestAscendW4A4LaosDynamicLinearMethod(TestBase):
 
     def test_apply_with_npu(self):
         layer = torch.nn.Module()
-        layer.weight = torch.nn.Parameter(torch.randn(128, 32, dtype=torch.int32).npu(), requires_grad=False)
+        layer.weight = torch.nn.Parameter(torch.randn(128, 32).to(torch.int32).npu(), requires_grad=False)
         layer.weight_scale = torch.nn.Parameter(torch.randn(256, 1, dtype=torch.float32).npu(), requires_grad=False)
 
         x = torch.randn(32, 128, dtype=torch.bfloat16).npu()

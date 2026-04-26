@@ -136,10 +136,12 @@ class TestAscendW8A8PDMixLinearScheme(TestBase):
 
 class TestAscendW8A8PDMixMoEScheme(TestBase):
 
+    @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_mc2_group")
     @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_ep_group")
     @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_current_vllm_config")
     @patch("vllm_ascend.quantization.methods.w8a8_dynamic.get_ascend_config")
-    def test_get_dynamic_quant_param(self, mock_ascend, mock_vllm, mock_ep):
+    def test_get_dynamic_quant_param(self, mock_ascend, mock_vllm, mock_ep, mock_mc2):
+        mock_mc2.side_effect = AttributeError()
         mock_vllm.return_value = create_mock_vllm_config()
         mock_ascend.return_value = MagicMock(eplb_config=MagicMock(dynamic_eplb=False))
         scheme = AscendW8A8PDMixFusedMoeMethod()

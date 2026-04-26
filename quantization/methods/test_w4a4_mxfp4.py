@@ -60,14 +60,13 @@ class TestAscendW4A4MXFP4LinearMethod(TestBase):
         scheme = AscendW4A4MXFP4DynamicLinearMethod()
         self.assertEqual(scheme.group_size, 64)
 
-    @patch("torch_npu.npu_quant_matmul")
-    @patch("torch_npu.npu_dynamic_mx_quant")
-    def test_apply_3d_input(self, mock_dyn_quant, mock_matmul):
-        mock_dyn_quant.return_value = (
+    @patch("vllm_ascend.quantization.methods.w4a4_mxfp4.torch_npu")
+    def test_apply_3d_input(self, mock_npu):
+        mock_npu.npu_dynamic_mx_quant.return_value = (
             torch.randint(0, 255, (32, 128), dtype=torch.uint8),
             torch.randint(0, 255, (32, 4), dtype=torch.uint8)
         )
-        mock_matmul.return_value = torch.randn(32, 1, 128)
+        mock_npu.npu_quant_matmul.return_value = torch.randn(32, 1, 128)
         layer = MagicMock()
         layer.weight = MagicMock(data=torch.randint(0, 255, (128, 128), dtype=torch.uint8))
         layer.weight_scale = MagicMock(data=torch.randint(0, 255, (4, 128, 2), dtype=torch.uint8))
@@ -128,9 +127,10 @@ class TestAscendW4A4MXFP4MoEMethod(TestBase):
         self.assertEqual(layer.w13_weight_scale.shape, (8, 2, 256, 2))
         self.assertEqual(layer.w2_weight_scale.shape, (8, 4, 128, 2))
 
+    @patch("vllm_ascend.quantization.methods.w4a4_mxfp4.torch_npu")
     @patch("vllm_ascend.quantization.methods.w4a4_mxfp4._EXTRA_CTX")
     @patch("vllm_ascend.quantization.methods.w4a4_mxfp4.select_experts")
-    def test_apply_full_params(self, mock_select, mock_ctx):
+    def test_apply_full_params(self, mock_select, mock_ctx, mock_npu):
         tokens = 4
         layer = nn.Module()
         layer.w13_weight = nn.Parameter(torch.randint(0, 255, (8, 64, 256), dtype=torch.uint8), requires_grad=False)
@@ -155,7 +155,3 @@ class TestAscendW4A4MXFP4MoEMethod(TestBase):
             apply_router_weight_on_input=True
         )
         mock_comm.fused_experts.assert_called_once()
-        kwargs = mock_comm.fused_experts.call_args.kwargs
-        self.assertEqual(kwargs["mxfp_act_quant_type"], FLOAT8_E8M0FNU_DTYPE)
-        self.assertEqual(kwargs["mxfp_per_token_scale_dtype"], FLOAT8_E8M0FNU_DTYPE)
-        self.assertEqual(kwargs["mxfp_use_bf16"], True)

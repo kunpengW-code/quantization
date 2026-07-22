@@ -29,8 +29,6 @@ vllm-ascend 的量化框架在 [vllm_ascend/quantization/__init__.py](https://gi
 
 **框架层基本可复用**，因为 `get_quant_method` 是基于 `nn.Module` 类型与 `prefix` 的分发，与 runner 版本解耦。
 
-2. **量化 Config 的 KV 量化接口**：V2 的 `attn_utils.py` 调用 `vllm_config.quant_config.get_kv_quant_split_factor()` 与 `get_kv_quant_dtype()`。这两个接口必须在三类 Config 上都实现（目前 ModelSlim 与 compressed-tensors 实现了，FP8 需确认）。
-
 ---
 
 ## 3. Linear 量化适配

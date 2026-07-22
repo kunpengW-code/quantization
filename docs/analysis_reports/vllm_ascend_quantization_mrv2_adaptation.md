@@ -72,7 +72,7 @@ vllm-ascend 的量化框架在 [vllm_ascend/quantization/__init__.py](https://gi
 
 ### 5.2 适配 V2 需要做的工作
 
-KV cache 量化是 V2 适配中**工作量最大、风险最高**的部分，因为 V2 已将 `_allocate_kv_cache` / `_reshape_kv_cache` 列为待移除的临时方案。
+KV cache 量化是 V2 适配中**工作量最大、风险最高**的部分。
 
 1. **KV cache 分配的量化感知**：
    - `_allocate_kv_cache`（[attn_utils.py:261](https://github.com/vllm-project/vllm-ascend/blob/main/vllm_ascend/worker/v2/attn_utils.py#L261)）当前以 `torch.int8` 分配 K/V buffer，再在 `_reshape_kv_cache` 中按 spec 的 dtype reshape。
@@ -90,11 +90,9 @@ KV cache 量化是 V2 适配中**工作量最大、风险最高**的部分，因
    - `_allocate_kv_cache` 在 `kv_transfer_config` 非 None 时对 K/V buffer 额外分配 `alignment=2MB` 并 `_align_memory` 对齐，以支持 Mooncake PD 分离。
    - 量化（尤其 FAQuant）下 K/V 实际存储 dtype 与 buffer 起始 int8 不同，2M 对齐的偏移计算必须基于量化后的实际存储布局，否则 PD 传输会错位。
 
-5. **MLA 注意力下的 FAQuant head_size**：
-   - MLA 将 K 拆为 nope 与 rope 两部分。FAQuant 下 `head_size = attn_module.head_size + attn_module.qk_rope_head_dim`，且 `cache_dtype_str=None`（表示走 impl 内部 dtype）。
-   - V2 的 `AscendMLAAttentionSpec` 构造需保证该 head_size 与实际 KV cache tensor 的物理布局一致，否则 attention 后端会越界访问。
+5. **ACL Graph 下的 KV 量化参数更新**：V1 的 full graph 通过 `attention_v1.py` / `mla_v1.py` 的 `update_graph_params` 在 replay 前 host-side 更新 attention 参数。V2 若启用 FULL graph，需验证量化 KV cache 的 scale 参数也在更新链路中。
 
-6. **ACL Graph 下的 KV 量化参数更新**：V1 的 full graph 通过 `attention_v1.py` / `mla_v1.py` 的 `update_graph_params` 在 replay 前 host-side 更新 attention 参数。V2 若启用 FULL graph，需验证量化 KV cache 的 scale 参数也在更新链路中。
+6. **KV不连续与NZ叠加**：后续切换到KV不连续实现后，需确认NZ是否支持。
 
 ---
 
